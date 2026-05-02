@@ -86,6 +86,3 @@ Current 2026 holdout performance:
 
 The holdout result is intentionally reported as modest. Professional Valorant outcomes are noisy, rosters shift, and this model avoids cheating with post-match stats.
 
-## Resume Wording
-
-> Built an end-to-end Valorant esports analytics platform using VCT 2021-2026 match history, sequential feature engineering, model benchmarking, and an interactive Streamlit dashboard for pre-match map prediction and performance analysis.

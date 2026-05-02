@@ -1,18 +1,20 @@
 # ValorPredict
 
-ValorPredict is a Streamlit and scikit-learn analytics project for predicting professional Valorant map winners from pre-match context and historical team form.
+ValorPredict is a Streamlit and scikit-learn analytics project for Valorant lineup strategy. It uses professional VCT history to simulate how map choice, five-agent compositions, and per-agent kill targets change a team's modeled win probability.
 
 ## Project Status
 
-The original prototype used a tiny duplicated CSV and a single random forest. This version rebuilds the project around a real VCT dataset, a leak-aware feature pipeline, model benchmarking, and an interactive analytics dashboard.
+The original prototype used a tiny duplicated CSV and a single random forest. This version rebuilds the project around a real VCT dataset, a strategy simulator, leak-aware pre-match modeling, model benchmarking, and an interactive analytics dashboard.
 
 Current engineering foundation:
 
 - curated VCT 2021-2026 dataset sourced from Kaggle/VLR.gg
+- Strategy Lab that lets a user choose a map, five agents, current kills, and a target win probability
+- model-based per-agent kill target recommendations for the selected composition
 - sequential pre-match feature engineering with team form, map form, head-to-head form, round differential, and Elo-style strength
 - benchmark suite across baseline, logistic regression, random forest, extra trees, gradient boosting, histogram gradient boosting, AdaBoost, and KNN
 - honest time-based evaluation: train on 2021-2024, validate on 2025, test on 2026
-- Streamlit dashboard for predictions, model comparison, VCT exploration, and player stats
+- Streamlit dashboard for lineup strategy, pre-match prediction, model comparison, VCT exploration, and player stats
 - reproducible data prep and model training scripts
 
 ## Project Structure
@@ -20,13 +22,19 @@ Current engineering foundation:
 ```text
 app.py
 train_model.py
+train_strategy_model.py
 data/external/vct_2021_2026/
 data/processed/vct_map_features.csv
+data/processed/vct_lineup_strategy_features.csv
 artifacts/valorpredict_model.joblib
+artifacts/strategy_model.joblib
 reports/model_report.md
 reports/model_comparison.csv
+reports/strategy_model_report.md
+reports/strategy_model_comparison.csv
 reports/metrics.json
 scripts/prepare_vct_dataset.py
+src/valorpredict/strategy_modeling.py
 src/valorpredict/vct_modeling.py
 tests/test_pipeline.py
 ```
@@ -38,6 +46,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python train_model.py
+python train_strategy_model.py
 streamlit run app.py
 ```
 
@@ -62,11 +71,33 @@ python scripts/prepare_vct_dataset.py
 ## Validate
 
 ```bash
-python -m compileall app.py train_model.py scripts src tests
+python -m compileall app.py train_model.py train_strategy_model.py scripts src tests
 python -m unittest discover -s tests
 ```
 
 ## Modeling
+
+### Strategy Lab
+
+The primary project experience is a lineup simulator:
+
+- select a map such as Ascent
+- select five agents such as Jett, Sova, Omen, Killjoy, and KAY/O
+- enter current or expected kills for each agent
+- set a target win probability
+- receive model-based minimum kill targets per agent
+
+This model intentionally uses in-game kill lines, so it is not a pre-match betting model. It answers: given this composition and these performance targets, how often did similar professional VCT team-map examples convert into wins?
+
+Current best strategy model: Gradient Boosting.
+
+Current 2026 strategy holdout performance:
+
+- Accuracy: 86.9%
+- Balanced accuracy: 86.9%
+- ROC AUC: 95.5%
+
+### Pre-Match Model
 
 This version can honestly claim:
 
@@ -86,3 +117,6 @@ Current 2026 holdout performance:
 
 The holdout result is intentionally reported as modest. Professional Valorant outcomes are noisy, rosters shift, and this model avoids cheating with post-match stats.
 
+## Resume Wording
+
+> Built an end-to-end Valorant esports strategy platform using VCT 2021-2026 match history, agent-composition modeling, per-agent kill target simulation, sequential feature engineering, model benchmarking, and an interactive Streamlit dashboard for lineup planning and match analytics.

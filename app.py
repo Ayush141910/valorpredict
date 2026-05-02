@@ -10,11 +10,20 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
+from valorpredict.strategy_modeling import (  # noqa: E402
+    build_lineup_frame,
+    normalize_agent,
+    predict_lineup_probability,
+    reference_kill,
+    recommend_kill_targets,
+)
 from valorpredict.vct_modeling import build_prediction_frame  # noqa: E402
 
 ARTIFACT_PATH = ROOT / "artifacts" / "valorpredict_model.joblib"
+STRATEGY_ARTIFACT_PATH = ROOT / "artifacts" / "strategy_model.joblib"
 DATA_DIR = ROOT / "data" / "external" / "vct_2021_2026"
 MODEL_COMPARISON_PATH = ROOT / "reports" / "model_comparison.csv"
+STRATEGY_COMPARISON_PATH = ROOT / "reports" / "strategy_model_comparison.csv"
 
 
 @st.cache_resource
@@ -22,6 +31,13 @@ def load_artifact() -> dict:
     if not ARTIFACT_PATH.exists():
         raise FileNotFoundError("Model artifact not found. Run `python train_model.py` first.")
     return joblib.load(ARTIFACT_PATH)
+
+
+@st.cache_resource
+def load_strategy_artifact() -> dict:
+    if not STRATEGY_ARTIFACT_PATH.exists():
+        raise FileNotFoundError("Strategy artifact not found. Run `python train_strategy_model.py` first.")
+    return joblib.load(STRATEGY_ARTIFACT_PATH)
 
 
 @st.cache_data
@@ -32,6 +48,7 @@ def load_tables() -> dict[str, pd.DataFrame]:
         "players": pd.read_csv(DATA_DIR / "player_map_stats.csv.gz"),
         "agents": pd.read_csv(DATA_DIR / "team_agent_compositions.csv.gz"),
         "comparison": pd.read_csv(MODEL_COMPARISON_PATH),
+        "strategy_comparison": pd.read_csv(STRATEGY_COMPARISON_PATH),
     }
 
 
@@ -87,10 +104,17 @@ def option_index(options: list[str], preferred: str, fallback: int = 0) -> int:
     return options.index(preferred) if preferred in options else min(fallback, len(options) - 1)
 
 
+def title_agent(agent: str) -> str:
+    labels = {"kayo": "KAY/O"}
+    normalized = normalize_agent(agent)
+    return labels.get(normalized, normalized.replace("_", " ").title())
+
+
 st.set_page_config(page_title="ValorPredict", layout="wide")
 
 try:
     artifact = load_artifact()
+    strategy_artifact = load_strategy_artifact()
 except FileNotFoundError as exc:
     st.error(str(exc))
     st.stop()
@@ -98,27 +122,120 @@ except FileNotFoundError as exc:
 tables = load_tables()
 model = artifact["model"]
 metadata = artifact["metadata"]
+strategy_model = strategy_artifact["model"]
+strategy_metadata = strategy_artifact["metadata"]
+kill_reference = strategy_artifact["kill_reference"]
 maps = tables["maps"]
 matches = tables["matches"]
 players = tables["players"]
 agents = tables["agents"]
 comparison = tables["comparison"]
+strategy_comparison = tables["strategy_comparison"]
 team_options_ranked = popular_teams(maps)
 
 st.title("ValorPredict")
-st.caption("Professional Valorant map prediction and VCT analytics.")
+st.caption("Valorant lineup strategy, kill-target simulation, and VCT analytics.")
 
 with st.sidebar:
-    st.subheader("Model")
+    st.subheader("Strategy Model")
+    st.metric("Best model", strategy_metadata["best_model"].replace("_", " ").title())
+    st.metric("2025 strategy BA", metric_value(strategy_metadata, "validation", "balanced_accuracy"))
+    st.metric("2026 strategy BA", metric_value(strategy_metadata, "test", "balanced_accuracy"))
+    st.metric("Lineup rows", f"{strategy_metadata['rows']['features']:,}")
+    st.divider()
+    st.subheader("Pre-Match Model")
     st.metric("Best model", metadata["best_model"].replace("_", " ").title())
     st.metric("2025 validation BA", metric_value(metadata, "validation", "balanced_accuracy"))
     st.metric("2026 holdout BA", metric_value(metadata, "test", "balanced_accuracy"))
-    st.metric("Feature rows", f"{metadata['rows']['features']:,}")
     st.metric("Maps", f"{len(maps):,}")
 
-predict_tab, benchmark_tab, explorer_tab, player_tab, data_tab = st.tabs(
-    ["Predict", "Models", "VCT Explorer", "Players", "Data"]
+strategy_tab, predict_tab, benchmark_tab, explorer_tab, player_tab, data_tab = st.tabs(
+    ["Strategy Lab", "Pre-Match", "Models", "VCT Explorer", "Players", "Data"]
 )
+
+with strategy_tab:
+    st.subheader("Lineup Strategy Lab")
+    setup_col, result_col = st.columns([1.1, 0.9])
+    strategy_maps = strategy_metadata["maps"]
+    strategy_agents = strategy_metadata["agents"]
+    default_agents = ["jett", "sova", "omen", "killjoy", "kayo"]
+
+    with setup_col:
+        map_name = st.selectbox("Map", strategy_maps, index=option_index(strategy_maps, "Ascent"))
+        rounds = st.slider("Expected rounds", min_value=13, max_value=36, value=24)
+        target_probability = st.slider("Target win probability", min_value=0.50, max_value=0.80, value=0.60, step=0.01)
+
+        selected_agents: list[str] = []
+        current_kills: dict[str, int] = {}
+        for slot in range(5):
+            cols = st.columns([0.62, 0.38])
+            default_agent = default_agents[slot] if slot < len(default_agents) else strategy_agents[slot]
+            with cols[0]:
+                agent = st.selectbox(
+                    f"Player {slot + 1} agent",
+                    strategy_agents,
+                    index=option_index(strategy_agents, default_agent, slot),
+                    format_func=title_agent,
+                    key=f"strategy_agent_{slot}",
+                )
+            with cols[1]:
+                reference = reference_kill(agent, map_name, kill_reference, "Median Kills")
+                kills = st.number_input(
+                    f"{title_agent(agent)} kills",
+                    min_value=0,
+                    max_value=45,
+                    value=max(0, reference),
+                    step=1,
+                    key=f"strategy_kills_{slot}",
+                )
+            selected_agents.append(agent)
+            current_kills[normalize_agent(agent)] = int(kills)
+
+    duplicate_agents = len(set(map(normalize_agent, selected_agents))) != 5
+    with result_col:
+        if duplicate_agents:
+            st.warning("Choose five different agents for a valid Valorant composition.")
+        else:
+            frame = build_lineup_frame(
+                map_name=map_name,
+                agent_kills=current_kills,
+                agents=strategy_agents,
+                rounds=rounds,
+                feature_columns=strategy_metadata["feature_columns"],
+            )
+            probability = predict_lineup_probability(strategy_model, frame)
+            targets, target_score = recommend_kill_targets(
+                model=strategy_model,
+                map_name=map_name,
+                selected_agents=selected_agents,
+                agents=strategy_agents,
+                feature_columns=strategy_metadata["feature_columns"],
+                reference=kill_reference,
+                target_probability=target_probability,
+                rounds=rounds,
+            )
+
+            st.metric("Current modeled win probability", pct(probability))
+            st.progress(min(max(probability, 0), 1))
+            st.metric("Recommended target probability", pct(target_score))
+
+            target_rows = []
+            for agent in selected_agents:
+                normalized = normalize_agent(agent)
+                current = current_kills[normalized]
+                target = targets[normalized]
+                target_rows.append(
+                    {
+                        "Agent": title_agent(agent),
+                        "Current Kills": current,
+                        "Target Kills": target,
+                        "Gap": max(0, target - current),
+                    }
+                )
+            st.dataframe(pd.DataFrame(target_rows), hide_index=True, use_container_width=True)
+            st.caption(
+                "This simulator is built from professional VCT outcomes, so it estimates how similar historical lineups converted kill lines into map wins."
+            )
 
 with predict_tab:
     left, right = st.columns([1, 1])
@@ -168,9 +285,11 @@ with predict_tab:
 
 with benchmark_tab:
     st.subheader("Model Benchmark")
+    model_family = st.segmented_control("Model family", ["Strategy Lab", "Pre-Match"], default="Strategy Lab")
     metric = st.selectbox("Metric", ["balanced_accuracy", "roc_auc", "accuracy", "f1", "log_loss", "brier"])
     split = st.selectbox("Split", ["validation", "test", "train"])
-    board = comparison[comparison["split"] == split].sort_values(metric, ascending=metric in {"log_loss", "brier"})
+    source = strategy_comparison if model_family == "Strategy Lab" else comparison
+    board = source[source["split"] == split].sort_values(metric, ascending=metric in {"log_loss", "brier"})
     st.dataframe(board, hide_index=True, use_container_width=True)
 
     chart_data = board.set_index("model")[[metric]]
@@ -258,10 +377,17 @@ with data_tab:
             {"File": "player_map_stats.csv.gz", "Rows": len(players), "Purpose": "Player-map performance"},
             {"File": "team_agent_compositions.csv.gz", "Rows": len(agents), "Purpose": "Agent composition aggregates"},
             {"File": "data/processed/vct_map_features.csv", "Rows": metadata["rows"]["features"], "Purpose": "Model features"},
+            {
+                "File": "data/processed/vct_lineup_strategy_features.csv",
+                "Rows": strategy_metadata["rows"]["features"],
+                "Purpose": "Strategy Lab lineup features",
+            },
         ]
     )
     st.dataframe(files, hide_index=True, use_container_width=True)
 
-    st.subheader("Leakage Controls")
+    st.subheader("Model Notes")
+    for note in strategy_metadata.get("data_notes", []):
+        st.info(note)
     for note in metadata.get("data_notes", []):
         st.info(note)

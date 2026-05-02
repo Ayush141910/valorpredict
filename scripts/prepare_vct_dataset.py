@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 
-YEARS = range(2021, 2026)
+YEARS = range(2021, 2027)
 SOURCE_DATASET = "ryanluong1/valorant-champion-tour-2021-2023-data"
 
 
@@ -222,18 +222,29 @@ def build_team_agent_compositions(source_dir: Path) -> pd.DataFrame:
 
 
 def write_manifest(output_dir: Path, files: dict[str, pd.DataFrame]) -> None:
+    matches_by_year = files["matches.csv"]["Year"].value_counts().sort_index()
+    maps_by_year = files["maps.csv"]["Year"].value_counts().sort_index()
     lines = [
-        "# VCT 2021-2025 Curated Dataset",
+        "# VCT 2021-2026 Curated Dataset",
         "",
         "Source: Kaggle dataset `ryanluong1/valorant-champion-tour-2021-2023-data`.",
         "",
-        "Original source noted by the dataset author: VLR.gg VCT pages.",
+        "Important naming note: the Kaggle URL slug still says `2021-2023-data`, the current Kaggle title says `2021-2025 Data`, and the downloaded archive also contains `vct_2026`. This project intentionally curates VCT 2021 through VCT 2026 because those folders are present in the downloaded source.",
+        "",
+        "Original source noted by the Kaggle dataset author: VLR.gg VCT pages.",
         "",
         "License: MIT, per the Kaggle dataset page.",
         "",
         "This directory contains compact, modeling-friendly extracts. The full raw Kaggle extraction is intentionally not committed because it is about 1.2 GB.",
         "",
-        "Valorant launched in 2020; VCT data starts in 2021. This extract covers VCT 2021 through VCT 2025.",
+        "Valorant launched in 2020; VCT data starts in 2021. This extract covers VCT 2021 through VCT 2026.",
+        "",
+        "## Year Coverage",
+        "",
+    ]
+    for year in sorted(matches_by_year.index):
+        lines.append(f"- {year}: {int(matches_by_year[year]):,} matches, {int(maps_by_year.get(year, 0)):,} maps")
+    lines += [
         "",
         "## Files",
         "",
@@ -254,7 +265,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--output-dir",
-        default=Path("data/external/vct_2021_2025"),
+        default=Path("data/external/vct_2021_2026"),
         type=Path,
     )
     args = parser.parse_args()

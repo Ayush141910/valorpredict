@@ -1,34 +1,33 @@
 # ValorPredict
 
-ValorPredict is a Streamlit and scikit-learn prototype for scoring Valorant match outcome scenarios from player performance and match context.
+ValorPredict is a Streamlit and scikit-learn analytics project for predicting professional Valorant map winners from pre-match context and historical team form.
 
-## Honest Project Status
+## Project Status
 
-The original project is a beginner prototype, not yet a strong resume project. The current CSV has 50 rows but only 5 unique matches, repeated ten times. That makes the original notebook's 100% train/test accuracy misleading because duplicate rows can land in both training and test sets.
+The original prototype used a tiny duplicated CSV and a single random forest. This version rebuilds the project around a real VCT dataset, a leak-aware feature pipeline, model benchmarking, and an interactive analytics dashboard.
 
-This upgraded version keeps the idea but fixes the engineering foundation:
+Current engineering foundation:
 
-- reproducible `train_model.py` pipeline
-- curated VCT 2021-2025 dataset sourced from Kaggle/VLR.gg
-- exact de-duplication before validation
-- one-hot encoding for categorical features
-- gameplay feature engineering
-- model metadata and data-quality warnings saved with the artifact
-- Streamlit dashboard with probability scoring, model health, and training coverage
-- generated report at `reports/data_quality_report.md`
+- curated VCT 2021-2026 dataset sourced from Kaggle/VLR.gg
+- sequential pre-match feature engineering with team form, map form, head-to-head form, round differential, and Elo-style strength
+- benchmark suite across baseline, logistic regression, random forest, extra trees, gradient boosting, histogram gradient boosting, AdaBoost, and KNN
+- honest time-based evaluation: train on 2021-2024, validate on 2025, test on 2026
+- Streamlit dashboard for predictions, model comparison, VCT exploration, and player stats
+- reproducible data prep and model training scripts
 
 ## Project Structure
 
 ```text
 app.py
 train_model.py
-data/valorant_matches.csv
-data/external/vct_2021_2025/
+data/external/vct_2021_2026/
+data/processed/vct_map_features.csv
 artifacts/valorpredict_model.joblib
-reports/data_quality_report.md
+reports/model_report.md
+reports/model_comparison.csv
 reports/metrics.json
 scripts/prepare_vct_dataset.py
-src/valorpredict/features.py
+src/valorpredict/vct_modeling.py
 tests/test_pipeline.py
 ```
 
@@ -44,8 +43,8 @@ streamlit run app.py
 
 ## Data
 
-The current production-grade source dataset lives in `data/external/vct_2021_2025/`.
-It is a compact extract from Ryan Luong's Kaggle dataset, `ryanluong1/valorant-champion-tour-2021-2023-data`, which is MIT licensed and sourced from VLR.gg. The Kaggle URL slug still says `2021-2023-data`, but the current Kaggle dataset title and downloaded archive include VCT 2021-2025 data. Valorant launched in 2020 and VCT starts in 2021, so this project curates VCT 2021-2025.
+The current production-grade source dataset lives in `data/external/vct_2021_2026/`.
+It is a compact extract from Ryan Luong's Kaggle dataset, `ryanluong1/valorant-champion-tour-2021-2023-data`, which is MIT licensed and sourced from VLR.gg. The Kaggle URL slug still says `2021-2023-data`, the current Kaggle title says `2021-2025 Data`, and the downloaded archive also contains `vct_2026`. This project curates VCT 2021-2026 because those folders are present in the source archive.
 
 Included extracts:
 
@@ -63,27 +62,30 @@ python scripts/prepare_vct_dataset.py
 ## Validate
 
 ```bash
-python -m compileall app.py train_model.py src tests
+python -m compileall app.py train_model.py scripts src tests
 python -m unittest discover -s tests
 ```
 
-## What The Model Can And Cannot Claim
+## Modeling
 
 This version can honestly claim:
 
-- built a reproducible ML classification pipeline
-- audited dataset quality and leakage risk
-- created a Streamlit probability dashboard
-- packaged preprocessing and inference consistently
+- built a reproducible pre-match map winner classifier
+- benchmarked multiple model families on a time-based split
+- used 2026 as a forward-looking holdout set
+- avoided post-match leakage from final scores and player performance stats
+- shipped model metadata, comparison reports, and a dashboard
 
-It should not claim production-grade predictive performance yet. To make this genuinely resume-grade, replace the toy CSV with hundreds or thousands of real, non-duplicated matches and decide whether the product predicts pre-match outcomes or analyzes post-match performance.
+Current best model: AdaBoost.
 
-## Better Resume Wording
+Current 2026 holdout performance:
 
-Use this wording until the dataset is replaced:
+- Accuracy: 56.2%
+- Balanced accuracy: 56.4%
+- ROC AUC: 55.4%
 
-> Redesigned a Valorant match outcome prediction prototype with reproducible preprocessing, model validation, data-quality checks, and a Streamlit probability dashboard.
+The holdout result is intentionally reported as modest. Professional Valorant outcomes are noisy, rosters shift, and this model avoids cheating with post-match stats.
 
-After adding real data, stronger wording could be:
+## Resume Wording
 
-> Built an end-to-end Valorant analytics platform using real match history, feature engineering, calibrated classification models, and an interactive Streamlit dashboard for matchup and performance analysis.
+> Built an end-to-end Valorant esports analytics platform using VCT 2021-2026 match history, sequential feature engineering, model benchmarking, and an interactive Streamlit dashboard for pre-match map prediction and performance analysis.

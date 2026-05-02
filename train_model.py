@@ -1,16 +1,35 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
+
 import joblib
 import pandas as pd
 from sklearn.compose import ColumnTransformer
+from sklearn.dummy import DummyClassifier
+from sklearn.ensemble import (
+    AdaBoostClassifier,
+    ExtraTreesClassifier,
+    GradientBoostingClassifier,
+    HistGradientBoostingClassifier,
+    RandomForestClassifier,
+)
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
-from sklearn.model_selection import LeaveOneOut, StratifiedKFold, cross_val_predict
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    brier_score_loss,
+    f1_score,
+    log_loss,
+    roc_auc_score,
+)
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -18,249 +37,312 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
-from valorpredict.features import (  # noqa: E402
+from valorpredict.vct_modeling import (  # noqa: E402
     CATEGORICAL_FEATURES,
-    MODEL_FEATURES,
+    FEATURE_COLUMNS,
     NUMERIC_FEATURES,
-    FeatureEngineer,
+    TARGET_COLUMN,
+    build_feature_dataset,
+    load_vct_maps,
 )
 
-DATA_PATH = ROOT / "data" / "valorant_matches.csv"
+DATA_DIR = ROOT / "data" / "external" / "vct_2021_2026"
 ARTIFACT_PATH = ROOT / "artifacts" / "valorpredict_model.joblib"
-REPORT_PATH = ROOT / "reports" / "data_quality_report.md"
+FEATURE_DATASET_PATH = ROOT / "data" / "processed" / "vct_map_features.csv"
+REPORT_PATH = ROOT / "reports" / "model_report.md"
 METRICS_PATH = ROOT / "reports" / "metrics.json"
-TARGET = "Win"
-ID_COLUMNS = ["Player"]
+MODEL_COMPARISON_PATH = ROOT / "reports" / "model_comparison.csv"
 
 
-def load_data(path: Path = DATA_PATH) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    missing = set(MODEL_FEATURES + [TARGET]) - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {sorted(missing)}")
-    return df
+def make_preprocessor(scale_numeric: bool = True) -> ColumnTransformer:
+    numeric_steps = [("imputer", SimpleImputer(strategy="median"))]
+    if scale_numeric:
+        numeric_steps.append(("scaler", StandardScaler()))
 
-
-def audit_data(df: pd.DataFrame) -> dict:
-    exact_duplicates = int(df.duplicated().sum())
-    duplicate_rate = exact_duplicates / len(df) if len(df) else 0
-    unique_df = df.drop_duplicates()
-    label_counts = df[TARGET].value_counts().sort_index().to_dict()
-    unique_label_counts = unique_df[TARGET].value_counts().sort_index().to_dict()
-
-    warnings = []
-    if len(unique_df) < 100:
-        warnings.append(
-            "The dataset has fewer than 100 unique match rows, so validation metrics are not resume-grade."
-        )
-    if duplicate_rate > 0.2:
-        warnings.append(
-            "Exact duplicate rows dominate the dataset; a random train/test split will leak examples."
-        )
-    if len(unique_label_counts) < 2:
-        warnings.append("The deduplicated dataset does not contain both outcome classes.")
-    if min(unique_label_counts.values(), default=0) < 10:
-        warnings.append(
-            "At least one outcome class has fewer than 10 unique examples, making class-level metrics unstable."
-        )
-    warnings.append(
-        "Kills, deaths, assists, headshot percentage, and plants are post-match features; they explain an outcome after play, not before a match starts."
-    )
-
-    duplicate_groups = (
-        df.groupby(list(df.columns), dropna=False)
-        .size()
-        .sort_values(ascending=False)
-        .head(5)
-        .reset_index(name="count")
-    )
-
-    return {
-        "rows": int(len(df)),
-        "unique_rows": int(len(unique_df)),
-        "exact_duplicate_rows": exact_duplicates,
-        "duplicate_rate": round(duplicate_rate, 4),
-        "label_counts": {str(k): int(v) for k, v in label_counts.items()},
-        "unique_label_counts": {str(k): int(v) for k, v in unique_label_counts.items()},
-        "missing_values": {k: int(v) for k, v in df.isna().sum().to_dict().items()},
-        "categories": {
-            col: sorted(str(value) for value in df[col].dropna().unique())
-            for col in CATEGORICAL_FEATURES
-        },
-        "numeric_ranges": {
-            col: {
-                "min": float(df[col].min()),
-                "median": float(df[col].median()),
-                "max": float(df[col].max()),
-            }
-            for col in NUMERIC_FEATURES
-            if col in df.columns
-        },
-        "top_duplicate_groups": duplicate_groups.to_dict(orient="records"),
-        "warnings": warnings,
-    }
-
-
-def build_pipeline() -> Pipeline:
-    preprocessor = ColumnTransformer(
+    return ColumnTransformer(
         transformers=[
-            ("categorical", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL_FEATURES),
-            ("numeric", StandardScaler(), NUMERIC_FEATURES),
-        ]
-    )
-    classifier = LogisticRegression(
-        class_weight="balanced",
-        max_iter=2000,
-        random_state=42,
-    )
-    return Pipeline(
-        steps=[
-            ("features", FeatureEngineer()),
-            ("preprocess", preprocessor),
-            ("model", classifier),
-        ]
+            (
+                "categorical",
+                OneHotEncoder(handle_unknown="ignore", min_frequency=10, sparse_output=False),
+                CATEGORICAL_FEATURES,
+            ),
+            ("numeric", Pipeline(numeric_steps), NUMERIC_FEATURES),
+        ],
+        sparse_threshold=0,
     )
 
 
-def validate_model(pipeline: Pipeline, X: pd.DataFrame, y: pd.Series) -> dict:
-    baseline = y.value_counts(normalize=True).max()
-    min_class = int(y.value_counts().min()) if y.nunique() > 1 else 0
-
-    if y.nunique() < 2 or len(y) < 4 or min_class < 2:
-        return {
-            "strategy": "skipped",
-            "reason": "Not enough deduplicated examples in both classes.",
-            "majority_baseline_accuracy": round(float(baseline), 4),
-        }
-
-    if len(y) >= 30 and min_class >= 5:
-        cv = StratifiedKFold(n_splits=min(5, min_class), shuffle=True, random_state=42)
-        strategy = "stratified_k_fold_on_deduplicated_rows"
-    else:
-        cv = LeaveOneOut()
-        strategy = "leave_one_out_on_deduplicated_rows"
-
-    predictions = cross_val_predict(pipeline, X, y, cv=cv)
+def candidate_models() -> dict[str, Pipeline]:
     return {
-        "strategy": strategy,
-        "samples": int(len(y)),
-        "majority_baseline_accuracy": round(float(baseline), 4),
-        "accuracy": round(float(accuracy_score(y, predictions)), 4),
-        "balanced_accuracy": round(float(balanced_accuracy_score(y, predictions)), 4),
-        "f1": round(float(f1_score(y, predictions, zero_division=0)), 4),
-    }
-
-
-def make_metadata(df: pd.DataFrame, deduped: pd.DataFrame, audit: dict, metrics: dict) -> dict:
-    numeric_ranges = {
-        col: {
-            "min": float(deduped[col].min()),
-            "median": float(deduped[col].median()),
-            "max": float(deduped[col].max()),
-        }
-        for col in ["Kills", "Deaths", "Assists", "Headshot %", "Spike Plants", "Match Time"]
-    }
-    return {
-        "project": "ValorPredict",
-        "version": "0.2.0",
-        "created_at_utc": datetime.now(UTC).isoformat(),
-        "data_path": str(DATA_PATH),
-        "training_rows": int(len(df)),
-        "unique_training_rows": int(len(deduped)),
-        "target": TARGET,
-        "target_labels": {"0": "Lose", "1": "Win"},
-        "features": MODEL_FEATURES,
-        "categorical_features": CATEGORICAL_FEATURES,
-        "numeric_ranges": numeric_ranges,
-        "categories": audit["categories"],
-        "metrics": metrics,
-        "data_quality": audit,
-        "status": "DEMO_ONLY" if audit["warnings"] else "TRAINED",
-        "recommended_resume_positioning": (
-            "Use as a redesigned ML demo unless the dataset is replaced with real, non-duplicated match history."
+        "majority_baseline": Pipeline(
+            [
+                ("preprocess", make_preprocessor(scale_numeric=False)),
+                ("model", DummyClassifier(strategy="most_frequent")),
+            ]
+        ),
+        "logistic_regression": Pipeline(
+            [
+                ("preprocess", make_preprocessor(scale_numeric=True)),
+                (
+                    "model",
+                    LogisticRegression(
+                        C=0.6,
+                        class_weight="balanced",
+                        max_iter=2000,
+                        n_jobs=1,
+                        random_state=42,
+                    ),
+                ),
+            ]
+        ),
+        "random_forest": Pipeline(
+            [
+                ("preprocess", make_preprocessor(scale_numeric=False)),
+                (
+                    "model",
+                    RandomForestClassifier(
+                        n_estimators=260,
+                        min_samples_leaf=8,
+                        class_weight="balanced_subsample",
+                        n_jobs=1,
+                        random_state=42,
+                    ),
+                ),
+            ]
+        ),
+        "extra_trees": Pipeline(
+            [
+                ("preprocess", make_preprocessor(scale_numeric=False)),
+                (
+                    "model",
+                    ExtraTreesClassifier(
+                        n_estimators=320,
+                        min_samples_leaf=6,
+                        class_weight="balanced",
+                        n_jobs=1,
+                        random_state=42,
+                    ),
+                ),
+            ]
+        ),
+        "gradient_boosting": Pipeline(
+            [
+                ("preprocess", make_preprocessor(scale_numeric=False)),
+                ("model", GradientBoostingClassifier(random_state=42)),
+            ]
+        ),
+        "hist_gradient_boosting": Pipeline(
+            [
+                ("preprocess", make_preprocessor(scale_numeric=False)),
+                ("model", HistGradientBoostingClassifier(max_iter=180, l2_regularization=0.05, random_state=42)),
+            ]
+        ),
+        "ada_boost": Pipeline(
+            [
+                ("preprocess", make_preprocessor(scale_numeric=False)),
+                ("model", AdaBoostClassifier(n_estimators=180, learning_rate=0.05, random_state=42)),
+            ]
+        ),
+        "knn": Pipeline(
+            [
+                ("preprocess", make_preprocessor(scale_numeric=True)),
+                ("model", KNeighborsClassifier(n_neighbors=31, weights="distance")),
+            ]
         ),
     }
 
 
-def write_report(audit: dict, metrics: dict, metadata: dict) -> None:
-    duplicate_rows = "\n".join(
-        f"- Count {row['count']}: {row['Player']} / {row['Agent']} / {row['Map']} / Win={row['Win']}"
-        for row in audit["top_duplicate_groups"]
+def evaluate(model: Pipeline, X: pd.DataFrame, y: pd.Series) -> dict[str, float]:
+    pred = model.predict(X)
+    proba = model.predict_proba(X)[:, 1]
+    return {
+        "accuracy": accuracy_score(y, pred),
+        "balanced_accuracy": balanced_accuracy_score(y, pred),
+        "f1": f1_score(y, pred),
+        "roc_auc": roc_auc_score(y, proba),
+        "log_loss": log_loss(y, proba, labels=[0, 1]),
+        "brier": brier_score_loss(y, proba),
+    }
+
+
+def split_feature_data(features: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    return {
+        "train": features[features["Year"] <= 2024].copy(),
+        "validation": features[features["Year"] == 2025].copy(),
+        "test": features[features["Year"] == 2026].copy(),
+    }
+
+
+def fit_and_compare(features: pd.DataFrame) -> tuple[str, Pipeline, pd.DataFrame, dict[str, dict[str, float]]]:
+    splits = split_feature_data(features)
+    X_train = splits["train"][FEATURE_COLUMNS]
+    y_train = splits["train"][TARGET_COLUMN]
+
+    rows = []
+    fitted: dict[str, Pipeline] = {}
+    for model_name, model in candidate_models().items():
+        model.fit(X_train, y_train)
+        fitted[model_name] = model
+        for split_name, frame in splits.items():
+            metrics = evaluate(model, frame[FEATURE_COLUMNS], frame[TARGET_COLUMN])
+            rows.append(
+                {
+                    "model": model_name,
+                    "split": split_name,
+                    "rows": len(frame),
+                    **{key: round(float(value), 4) for key, value in metrics.items()},
+                }
+            )
+
+    comparison = pd.DataFrame(rows)
+    validation = comparison[comparison["split"] == "validation"].copy()
+    validation = validation.sort_values(
+        ["balanced_accuracy", "roc_auc", "log_loss"],
+        ascending=[False, False, True],
     )
-    warnings = "\n".join(f"- {warning}" for warning in audit["warnings"])
-    metrics_block = json.dumps(metrics, indent=2)
+    best_name = str(validation.iloc[0]["model"])
 
-    report = f"""# ValorPredict Data Quality Report
+    final_model = candidate_models()[best_name]
+    final_model.fit(features[FEATURE_COLUMNS], features[TARGET_COLUMN])
 
-## Verdict
+    best_metrics = {
+        split: comparison[(comparison["model"] == best_name) & (comparison["split"] == split)]
+        .drop(columns=["model", "split"])
+        .iloc[0]
+        .to_dict()
+        for split in ["train", "validation", "test"]
+    }
+    return best_name, final_model, comparison, best_metrics
 
-This project is not resume-ready in its original form. The app and notebook are a solid beginner prototype, but the current dataset cannot support the resume claim of a meaningful Valorant match outcome predictor.
 
-## Dataset Reality
+def make_metadata(
+    maps: pd.DataFrame,
+    features: pd.DataFrame,
+    history: dict,
+    best_model_name: str,
+    comparison: pd.DataFrame,
+    best_metrics: dict,
+) -> dict:
+    return {
+        "project": "ValorPredict",
+        "version": "1.0.0",
+        "created_at_utc": datetime.now(UTC).isoformat(),
+        "model_type": "pre_match_map_winner",
+        "best_model": best_model_name,
+        "target": TARGET_COLUMN,
+        "target_description": "Predict whether Team A wins a map before the map is played.",
+        "data_dir": str(DATA_DIR),
+        "artifact_path": str(ARTIFACT_PATH),
+        "feature_dataset_path": str(FEATURE_DATASET_PATH),
+        "rows": {
+            "maps": int(len(maps)),
+            "features": int(len(features)),
+            "train": int((features["Year"] <= 2024).sum()),
+            "validation_2025": int((features["Year"] == 2025).sum()),
+            "test_2026": int((features["Year"] == 2026).sum()),
+        },
+        "year_counts": {str(k): int(v) for k, v in features["Year"].value_counts().sort_index().to_dict().items()},
+        "feature_columns": FEATURE_COLUMNS,
+        "categorical_features": CATEGORICAL_FEATURES,
+        "numeric_features": NUMERIC_FEATURES,
+        "team_options": sorted(set(maps["Team A"]).union(set(maps["Team B"]))),
+        "map_options": sorted(maps["Map"].dropna().unique().tolist()),
+        "tournament_options": sorted(maps["Tournament"].dropna().unique().tolist()),
+        "stage_options": sorted(maps["Stage"].dropna().unique().tolist()),
+        "match_type_options": sorted(maps["Match Type"].dropna().unique().tolist()),
+        "metrics": {
+            split: {key: round(float(value), 4) for key, value in values.items()}
+            for split, values in best_metrics.items()
+        },
+        "model_comparison": comparison.to_dict(orient="records"),
+        "history": history,
+        "data_notes": [
+            "This is a pre-match model. It uses only information available before each map: teams, map, event context, and prior historical form.",
+            "It does not use final scores, player kills, ACS, or post-map statistics as model inputs.",
+            "2026 records are treated as a forward-looking holdout test split.",
+        ],
+    }
 
-- Raw rows: {audit['rows']}
-- Unique rows after exact de-duplication: {audit['unique_rows']}
-- Exact duplicate rows: {audit['exact_duplicate_rows']}
-- Duplicate rate: {audit['duplicate_rate']:.0%}
-- Raw label counts: {audit['label_counts']}
-- Unique label counts: {audit['unique_label_counts']}
 
-## Critical Issues
+def write_report(metadata: dict, comparison: pd.DataFrame) -> None:
+    best = metadata["best_model"]
+    test = metadata["metrics"]["test"]
+    validation = metadata["metrics"]["validation"]
+    table_frame = comparison[comparison["split"].isin(["validation", "test"])].sort_values(
+        ["split", "balanced_accuracy"], ascending=[True, False]
+    )
+    columns = ["model", "split", "rows", "accuracy", "balanced_accuracy", "roc_auc", "log_loss"]
+    top_table = "| " + " | ".join(columns) + " |\n"
+    top_table += "| " + " | ".join(["---"] * len(columns)) + " |\n"
+    for row in table_frame[columns].to_dict(orient="records"):
+        top_table += "| " + " | ".join(str(row[column]) for column in columns) + " |\n"
+    report = f"""# ValorPredict Model Report
 
-{warnings}
+## Modeling Task
 
-## Why The Original 100% Accuracy Is Misleading
+Predict whether Team A wins a professional Valorant map before the map is played.
 
-The notebook uses a random train/test split after duplicating the same five matches ten times. That allows identical rows to appear in both the training and test sets, so the model can look perfect without proving that it generalizes.
+## Data
 
-## Upgraded Baseline
+- Source extract: `{DATA_DIR}`
+- Feature rows: {metadata['rows']['features']:,}
+- Training split: VCT 2021-2024 ({metadata['rows']['train']:,} rows)
+- Validation split: VCT 2025 ({metadata['rows']['validation_2025']:,} rows)
+- Holdout test split: VCT 2026 ({metadata['rows']['test_2026']:,} rows)
 
-The upgraded training script removes exact duplicates before validation, uses a scikit-learn pipeline with one-hot encoding and feature engineering, and saves metadata with the model artifact.
+## Best Model
 
-```json
-{metrics_block}
-```
+Selected model: `{best}`
 
-## Repeated Rows Found
+Validation balanced accuracy: {validation['balanced_accuracy']:.3f}
+Validation ROC AUC: {validation['roc_auc']:.3f}
 
-{duplicate_rows}
+2026 holdout balanced accuracy: {test['balanced_accuracy']:.3f}
+2026 holdout ROC AUC: {test['roc_auc']:.3f}
 
-## Resume Guidance
+## Leakage Controls
 
-Current wording should be softened unless you replace the data. A more accurate line today is:
+The model uses map context, team identities, and prior historical form features generated sequentially before each map. It does not train on final score, kills, ACS, ADR, KAST, or any other post-map player statistics.
 
-> Redesigned a Valorant match outcome prediction prototype with reproducible preprocessing, model validation, data-quality checks, and a Streamlit probability dashboard.
+## Model Benchmark
 
-For a strong resume project, collect real match history with hundreds or thousands of non-duplicated matches, separate pre-match prediction from post-match performance analysis, and report honest cross-validation metrics.
+{top_table}
 """
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text(report, encoding="utf-8")
 
 
+def public_metadata(metadata: dict) -> dict:
+    slim = dict(metadata)
+    slim.pop("history", None)
+    slim.pop("model_comparison", None)
+    return slim
+
+
 def main() -> None:
-    df = load_data()
-    audit = audit_data(df)
-    deduped = df.drop_duplicates().reset_index(drop=True)
-    X = deduped[MODEL_FEATURES]
-    y = deduped[TARGET]
+    maps = load_vct_maps(DATA_DIR)
+    features, history = build_feature_dataset(maps)
 
-    pipeline = build_pipeline()
-    metrics = validate_model(pipeline, X, y)
-    pipeline.fit(X, y)
+    FEATURE_DATASET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    features.to_csv(FEATURE_DATASET_PATH, index=False)
 
-    metadata = make_metadata(df, deduped, audit, metrics)
-    artifact = {"model": pipeline, "metadata": metadata}
+    best_model_name, final_model, comparison, best_metrics = fit_and_compare(features)
+    metadata = make_metadata(maps, features, history, best_model_name, comparison, best_metrics)
 
     ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(artifact, ARTIFACT_PATH)
+    joblib.dump({"model": final_model, "metadata": metadata}, ARTIFACT_PATH)
 
-    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    METRICS_PATH.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    write_report(audit, metrics, metadata)
+    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MODEL_COMPARISON_PATH.parent.mkdir(parents=True, exist_ok=True)
+    METRICS_PATH.write_text(json.dumps(public_metadata(metadata), indent=2), encoding="utf-8")
+    comparison.to_csv(MODEL_COMPARISON_PATH, index=False)
+    write_report(metadata, comparison)
 
     print(f"Saved model artifact: {ARTIFACT_PATH}")
-    print(f"Saved report: {REPORT_PATH}")
-    print(json.dumps(metrics, indent=2))
+    print(f"Saved feature dataset: {FEATURE_DATASET_PATH}")
+    print(f"Saved model comparison: {MODEL_COMPARISON_PATH}")
+    print(f"Best model: {best_model_name}")
+    print(json.dumps(metadata["metrics"], indent=2))
 
 
 if __name__ == "__main__":

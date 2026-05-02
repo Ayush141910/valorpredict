@@ -23,9 +23,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Train model artifact
-        run: python train_model.py
-
       - name: Run checks
         run: |
           python -m compileall app.py train_model.py src tests

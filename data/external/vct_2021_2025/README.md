@@ -2,6 +2,8 @@
 
 Source: Kaggle dataset `ryanluong1/valorant-champion-tour-2021-2023-data`.
 
+Important naming note: the Kaggle URL slug still says `2021-2023-data`, but the current dataset title is "Valorant Champion Tour 2021-2025 Data" and the downloaded archive contains folders for `vct_2021`, `vct_2022`, `vct_2023`, `vct_2024`, `vct_2025`, and `vct_2026`. This project intentionally curates only VCT 2021 through VCT 2025.
+
 Original source noted by the dataset author: VLR.gg VCT pages.
 
 License: MIT, per the Kaggle dataset page.
@@ -9,6 +11,14 @@ License: MIT, per the Kaggle dataset page.
 This directory contains compact, modeling-friendly extracts. The full raw Kaggle extraction is intentionally not committed because it is about 1.2 GB.
 
 Valorant launched in 2020; VCT data starts in 2021. This extract covers VCT 2021 through VCT 2025.
+
+## Year Coverage
+
+- 2021: 7,224 matches, 14,515 maps
+- 2022: 3,842 matches, 8,884 maps
+- 2023: 331 matches, 830 maps
+- 2024: 434 matches, 1,104 maps
+- 2025: 503 matches, 1,277 maps
 
 ## Files
 

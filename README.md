@@ -45,7 +45,7 @@ streamlit run app.py
 ## Data
 
 The current production-grade source dataset lives in `data/external/vct_2021_2025/`.
-It is a compact extract from Ryan Luong's Kaggle dataset, `ryanluong1/valorant-champion-tour-2021-2023-data`, which is MIT licensed and sourced from VLR.gg. Valorant launched in 2020 and VCT starts in 2021, so this extract covers VCT 2021-2025.
+It is a compact extract from Ryan Luong's Kaggle dataset, `ryanluong1/valorant-champion-tour-2021-2023-data`, which is MIT licensed and sourced from VLR.gg. The Kaggle URL slug still says `2021-2023-data`, but the current Kaggle dataset title and downloaded archive include VCT 2021-2025 data. Valorant launched in 2020 and VCT starts in 2021, so this project curates VCT 2021-2025.
 
 Included extracts:
 

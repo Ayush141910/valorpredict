@@ -356,6 +356,64 @@ def sensitivity_analysis(
     return pd.DataFrame(rows).sort_values(["Added Kills", "Probability Lift"], ascending=[True, False])
 
 
+def probability_drivers(
+    *,
+    model,
+    map_name: str,
+    current_kills: dict[str, int],
+    selected_agents: list[str],
+    agents: list[str],
+    feature_columns: list[str],
+    rounds: float,
+    swing: int = 3,
+) -> pd.DataFrame:
+    base_frame = build_lineup_frame(
+        map_name=map_name,
+        agent_kills=current_kills,
+        agents=agents,
+        rounds=rounds,
+        feature_columns=feature_columns,
+    )
+    base_probability = predict_lineup_probability(model, base_frame)
+    rows = []
+    for agent in selected_agents:
+        normalized = normalize_agent(agent)
+        up = current_kills.copy()
+        down = current_kills.copy()
+        up[normalized] = int(up.get(normalized, 0) + swing)
+        down[normalized] = max(0, int(down.get(normalized, 0) - swing))
+        up_probability = predict_lineup_probability(
+            model,
+            build_lineup_frame(
+                map_name=map_name,
+                agent_kills=up,
+                agents=agents,
+                rounds=rounds,
+                feature_columns=feature_columns,
+            ),
+        )
+        down_probability = predict_lineup_probability(
+            model,
+            build_lineup_frame(
+                map_name=map_name,
+                agent_kills=down,
+                agents=agents,
+                rounds=rounds,
+                feature_columns=feature_columns,
+            ),
+        )
+        rows.append(
+            {
+                "Agent": normalized,
+                "Role": agent_role(normalized),
+                "Upside Lift": up_probability - base_probability,
+                "Downside Risk": base_probability - down_probability,
+                "Swing Impact": (up_probability - base_probability) + (base_probability - down_probability),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("Swing Impact", ascending=False)
+
+
 def agent_map_meta(dataset: pd.DataFrame, map_name: str, agents: list[str], min_samples: int = 20) -> pd.DataFrame:
     map_rows = dataset[dataset["Map"] == map_name]
     records = []
@@ -378,6 +436,27 @@ def agent_map_meta(dataset: pd.DataFrame, map_name: str, agents: list[str], min_
             }
         )
     return pd.DataFrame(records).sort_values(["Win Rate", "Samples"], ascending=False)
+
+
+def agent_recommendations(
+    dataset: pd.DataFrame,
+    map_name: str,
+    role: str,
+    agents: list[str],
+    min_samples: int = 15,
+) -> pd.DataFrame:
+    meta = agent_map_meta(dataset, map_name, agents, min_samples=min_samples)
+    if meta.empty:
+        return meta
+    role_rows = meta[meta["Role"] == role].copy()
+    if role_rows.empty:
+        return pd.DataFrame(columns=meta.columns)
+    role_rows["Recommendation Score"] = (
+        role_rows["Win Rate"] * 0.65
+        + role_rows["Pick Rate"] * 0.20
+        + (role_rows["Samples"] / role_rows["Samples"].max()) * 0.15
+    )
+    return role_rows.sort_values(["Recommendation Score", "Samples"], ascending=False)
 
 
 def pair_synergy(dataset: pd.DataFrame, map_name: str, agents: list[str], min_samples: int = 15) -> pd.DataFrame:

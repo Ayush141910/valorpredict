@@ -2,6 +2,8 @@
 
 ValorPredict is a Streamlit and scikit-learn analytics project for Valorant lineup strategy. It uses professional VCT history to simulate how map choice, five-agent compositions, and per-agent kill targets change a team's modeled win probability.
 
+![ValorPredict Strategy Lab](docs/assets/strategy_lab_preview.png)
+
 ## Project Status
 
 The original prototype used a tiny duplicated CSV and a single random forest. This version rebuilds the project around a real VCT dataset, a strategy simulator, leak-aware pre-match modeling, model benchmarking, and an interactive analytics dashboard.
@@ -16,6 +18,11 @@ Current engineering foundation:
 - kill sensitivity simulator showing which player's extra kills move win probability most
 - map meta and selected-pair synergy tables for agent planning
 - side-by-side scenario comparison for alternate compositions
+- opponent-aware pressure comparison
+- player profile mode for role-specific agent recommendations
+- recent-meta window controls for 2025-2026 weighted exploration
+- probability calibration report for the strategy model
+- deployment-ready Streamlit configuration, Procfile, and Dockerfile
 - sequential pre-match feature engineering with team form, map form, head-to-head form, round differential, and Elo-style strength
 - benchmark suite across baseline, logistic regression, random forest, extra trees, gradient boosting, histogram gradient boosting, AdaBoost, and KNN
 - honest time-based evaluation: train on 2021-2024, validate on 2025, test on 2026
@@ -28,6 +35,9 @@ Current engineering foundation:
 app.py
 train_model.py
 train_strategy_model.py
+Dockerfile
+Procfile
+.streamlit/config.toml
 data/external/vct_2021_2026/
 data/processed/vct_map_features.csv
 data/processed/vct_lineup_strategy_features.csv
@@ -39,9 +49,14 @@ reports/strategy_model_report.md
 reports/strategy_model_comparison.csv
 reports/strategy_model_card.md
 reports/pre_match_model_card.md
+reports/strategy_calibration.csv
+reports/strategy_calibration_report.md
 reports/metrics.json
 docs/architecture.md
+docs/deployment.md
+docs/assets/
 scripts/prepare_vct_dataset.py
+scripts/generate_project_assets.py
 src/valorpredict/strategy_modeling.py
 src/valorpredict/vct_modeling.py
 tests/test_pipeline.py
@@ -55,6 +70,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python train_model.py
 python train_strategy_model.py
+python scripts/generate_project_assets.py
 streamlit run app.py
 ```
 
@@ -135,13 +151,23 @@ The holdout result is intentionally reported as modest. Professional Valorant ou
 - **Map Meta:** show high-performing agents on the selected map
 - **Pair Synergy:** show how selected agent pairs performed together historically
 - **Scenario Comparison:** compare the current comp against an alternate five-agent setup
+- **Opponent Pressure:** compare the selected team comp against an enemy comp idea
+- **Player Profile Mode:** recommend agents based on preferred role and current map
+- **Recent Meta Window:** filter exploratory evidence to recent VCT seasons
+- **Calibration View:** compare predicted probability bins against observed holdout results
 - **Model Transparency:** model cards, architecture notes, and leakage/limitation warnings
+
+![Kill Sensitivity](docs/assets/sensitivity_preview.png)
+
+![Map Meta](docs/assets/map_meta_preview.png)
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Deployment](docs/deployment.md)
 - [Strategy Model Card](reports/strategy_model_card.md)
 - [Pre-Match Model Card](reports/pre_match_model_card.md)
+- [Strategy Calibration Report](reports/strategy_calibration_report.md)
 
 ## Resume Wording
 

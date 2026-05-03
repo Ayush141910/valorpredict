@@ -10,8 +10,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from valorpredict.strategy_modeling import (
     agent_map_meta,
+    agent_recommendations,
     composition_strength,
     pair_synergy,
+    probability_drivers,
     role_breakdown,
     build_lineup_frame,
     predict_lineup_probability,
@@ -111,6 +113,17 @@ class ValorPredictPipelineTest(unittest.TestCase):
         )
         meta = agent_map_meta(dataset, "Ascent", artifact["metadata"]["agents"])
         synergy = pair_synergy(dataset, "Ascent", selected_agents, min_samples=1)
+        drivers = probability_drivers(
+            model=artifact["model"],
+            map_name="Ascent",
+            current_kills=current_kills,
+            selected_agents=selected_agents,
+            agents=artifact["metadata"]["agents"],
+            feature_columns=artifact["metadata"]["feature_columns"],
+            rounds=24,
+        )
+        recommendations = agent_recommendations(dataset[dataset["Year"] >= 2025], "Ascent", "Duelist", artifact["metadata"]["agents"])
+        calibration = pd.read_csv(ROOT / "reports" / "strategy_calibration.csv")
 
         self.assertIn("score", strength)
         self.assertGreaterEqual(strength["score"], 0)
@@ -119,6 +132,10 @@ class ValorPredictPipelineTest(unittest.TestCase):
         self.assertEqual(len(sensitivity), 15)
         self.assertFalse(meta.empty)
         self.assertIn("Win Rate", synergy.columns)
+        self.assertFalse(drivers.empty)
+        self.assertIn("Swing Impact", drivers.columns)
+        self.assertFalse(recommendations.empty)
+        self.assertIn("Observed Win Rate", calibration.columns)
 
 
 if __name__ == "__main__":

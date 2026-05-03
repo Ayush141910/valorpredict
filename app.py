@@ -12,12 +12,14 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from valorpredict.strategy_modeling import (  # noqa: E402
     agent_map_meta,
+    agent_recommendations,
     agent_role,
     build_lineup_frame,
     composition_strength,
     normalize_agent,
     pair_synergy,
     predict_lineup_probability,
+    probability_drivers,
     reference_kill,
     recommend_kill_targets,
     role_breakdown,
@@ -30,6 +32,7 @@ STRATEGY_ARTIFACT_PATH = ROOT / "artifacts" / "strategy_model.joblib"
 DATA_DIR = ROOT / "data" / "external" / "vct_2021_2026"
 MODEL_COMPARISON_PATH = ROOT / "reports" / "model_comparison.csv"
 STRATEGY_COMPARISON_PATH = ROOT / "reports" / "strategy_model_comparison.csv"
+CALIBRATION_PATH = ROOT / "reports" / "strategy_calibration.csv"
 
 
 @st.cache_resource
@@ -56,6 +59,7 @@ def load_tables() -> dict[str, pd.DataFrame]:
         "comparison": pd.read_csv(MODEL_COMPARISON_PATH),
         "strategy_comparison": pd.read_csv(STRATEGY_COMPARISON_PATH),
         "strategy_features": pd.read_csv(ROOT / "data" / "processed" / "vct_lineup_strategy_features.csv"),
+        "strategy_calibration": pd.read_csv(CALIBRATION_PATH) if CALIBRATION_PATH.exists() else pd.DataFrame(),
     }
 
 
@@ -125,6 +129,17 @@ def format_probability_table(frame: pd.DataFrame, columns: list[str]) -> pd.Data
     return formatted
 
 
+def preset_lineup(name: str) -> tuple[str, list[str]]:
+    presets = {
+        "Ascent default meta": ("Ascent", ["jett", "sova", "omen", "killjoy", "kayo"]),
+        "Ascent pressure comp": ("Ascent", ["jett", "breach", "sova", "omen", "killjoy"]),
+        "Bind double controller": ("Bind", ["raze", "skye", "brimstone", "viper", "cypher"]),
+        "Haven balanced comp": ("Haven", ["jett", "sova", "breach", "omen", "killjoy"]),
+        "Split control comp": ("Split", ["raze", "skye", "omen", "cypher", "viper"]),
+    }
+    return presets[name]
+
+
 st.set_page_config(page_title="ValorPredict", layout="wide")
 
 st.markdown(
@@ -162,6 +177,7 @@ agents = tables["agents"]
 comparison = tables["comparison"]
 strategy_comparison = tables["strategy_comparison"]
 strategy_features = tables["strategy_features"]
+strategy_calibration = tables["strategy_calibration"]
 team_options_ranked = popular_teams(maps)
 
 st.title("ValorPredict")
@@ -190,10 +206,23 @@ with strategy_tab:
     setup_col, result_col = st.columns([1.1, 0.9])
     strategy_maps = strategy_metadata["maps"]
     strategy_agents = strategy_metadata["agents"]
-    default_agents = ["jett", "sova", "omen", "killjoy", "kayo"]
+    preset_name = st.selectbox(
+        "Sample scenario",
+        [
+            "Ascent default meta",
+            "Ascent pressure comp",
+            "Bind double controller",
+            "Haven balanced comp",
+            "Split control comp",
+        ],
+    )
+    preset_map, default_agents = preset_lineup(preset_name)
+    available_years = sorted(strategy_features["Year"].unique())
+    meta_years = st.multiselect("Meta window", available_years, default=available_years[-2:])
+    meta_features = strategy_features[strategy_features["Year"].isin(meta_years)].copy() if meta_years else strategy_features
 
     with setup_col:
-        map_name = st.selectbox("Map", strategy_maps, index=option_index(strategy_maps, "Ascent"))
+        map_name = st.selectbox("Map", strategy_maps, index=option_index(strategy_maps, preset_map))
         rounds = st.slider("Expected rounds", min_value=13, max_value=36, value=24)
         target_probability = st.slider("Target win probability", min_value=0.50, max_value=0.80, value=0.60, step=0.01)
 
@@ -259,8 +288,17 @@ with strategy_tab:
                 target_probability=target_probability,
                 rounds=rounds,
             )
-            strength = composition_strength(strategy_features, map_name, selected_agents)
+            strength = composition_strength(meta_features, map_name, selected_agents)
             sensitivity = sensitivity_analysis(
+                model=strategy_model,
+                map_name=map_name,
+                current_kills=current_kills,
+                selected_agents=selected_agents,
+                agents=strategy_agents,
+                feature_columns=strategy_metadata["feature_columns"],
+                rounds=rounds,
+            )
+            drivers = probability_drivers(
                 model=strategy_model,
                 map_name=map_name,
                 current_kills=current_kills,
@@ -299,8 +337,8 @@ with strategy_tab:
             st.dataframe(pd.DataFrame(target_rows), hide_index=True, use_container_width=True)
 
     if not duplicate_agents:
-        overview_tab, sensitivity_tab, meta_tab, compare_tab = st.tabs(
-            ["Recommendation", "Sensitivity", "Map Meta", "Compare Comps"]
+        overview_tab, sensitivity_tab, meta_tab, profile_tab, opponent_tab, compare_tab = st.tabs(
+            ["Recommendation", "Sensitivity", "Map Meta", "Player Profile", "Opponent", "Compare Comps"]
         )
         with overview_tab:
             left_panel, right_panel = st.columns(2)
@@ -328,6 +366,11 @@ with strategy_tab:
             st.info(
                 "Use the kill targets as planning thresholds. A duelist may carry more frag pressure, while controllers, sentinels, and initiators still influence the probability through historical role-composition patterns."
             )
+            st.subheader("Model Drivers")
+            drivers_display = drivers.copy()
+            drivers_display["Agent"] = drivers_display["Agent"].map(title_agent)
+            drivers_display = format_probability_table(drivers_display, ["Upside Lift", "Downside Risk", "Swing Impact"])
+            st.dataframe(drivers_display, hide_index=True, use_container_width=True)
 
         with sensitivity_tab:
             st.subheader("Kill Sensitivity")
@@ -345,13 +388,13 @@ with strategy_tab:
 
         with meta_tab:
             st.subheader(f"{map_name} Meta")
-            meta = agent_map_meta(strategy_features, map_name, strategy_agents).head(18)
+            meta = agent_map_meta(meta_features, map_name, strategy_agents).head(18)
             meta["Agent"] = meta["Agent"].map(title_agent)
             meta = format_probability_table(meta, ["Win Rate", "Pick Rate"])
             meta["Avg Kills"] = meta["Avg Kills"].round(1)
             st.dataframe(meta, hide_index=True, use_container_width=True)
 
-            synergy = pair_synergy(strategy_features, map_name, selected_agents, min_samples=5)
+            synergy = pair_synergy(meta_features, map_name, selected_agents, min_samples=5)
             if synergy.empty:
                 st.info("No reliable pair synergy sample for this selected composition on this map.")
             else:
@@ -361,6 +404,82 @@ with strategy_tab:
                 synergy = format_probability_table(synergy, ["Win Rate"])
                 st.subheader("Selected Pair Synergy")
                 st.dataframe(synergy, hide_index=True, use_container_width=True)
+
+        with profile_tab:
+            st.subheader("Player Profile Mode")
+            selected_role = st.selectbox("Your preferred role", ["Duelist", "Initiator", "Controller", "Sentinel"])
+            pool = st.multiselect(
+                "Your agent pool",
+                [agent for agent in strategy_agents if agent_role(agent) == selected_role],
+                default=[agent for agent in default_agents if agent_role(agent) == selected_role][:2],
+                format_func=title_agent,
+            )
+            recommendations = agent_recommendations(meta_features, map_name, selected_role, strategy_agents)
+            if pool:
+                recommendations = recommendations[recommendations["Agent"].isin([normalize_agent(agent) for agent in pool])]
+            if recommendations.empty:
+                st.info("No reliable recommendation sample for this role, map, and meta window.")
+            else:
+                recommendations = recommendations.head(8).copy()
+                recommendations["Agent"] = recommendations["Agent"].map(title_agent)
+                recommendations = format_probability_table(
+                    recommendations,
+                    ["Win Rate", "Pick Rate", "Recommendation Score"],
+                )
+                recommendations["Avg Kills"] = recommendations["Avg Kills"].round(1)
+                st.dataframe(recommendations, hide_index=True, use_container_width=True)
+
+        with opponent_tab:
+            st.subheader("Opponent-Aware Pressure")
+            st.caption("Estimate whether your selected comp and kill line profiles better than the enemy idea.")
+            enemy_defaults = ["raze", "fade", "omen", "cypher", "breach"]
+            enemy_agents = []
+            enemy_kills = {}
+            enemy_cols = st.columns(5)
+            for slot, col in enumerate(enemy_cols):
+                with col:
+                    enemy_agent = st.selectbox(
+                        f"Enemy {slot + 1}",
+                        strategy_agents,
+                        index=option_index(strategy_agents, enemy_defaults[slot], slot),
+                        format_func=title_agent,
+                        key=f"enemy_agent_{slot}",
+                    )
+                    enemy_agents.append(enemy_agent)
+                    enemy_kills[normalize_agent(enemy_agent)] = reference_kill(enemy_agent, map_name, kill_reference, "P60 Kills")
+            if len(set(map(normalize_agent, enemy_agents))) != 5:
+                st.warning("Choose five different enemy agents.")
+            else:
+                enemy_frame = build_lineup_frame(
+                    map_name=map_name,
+                    agent_kills=enemy_kills,
+                    agents=strategy_agents,
+                    rounds=rounds,
+                    feature_columns=strategy_metadata["feature_columns"],
+                )
+                enemy_probability = predict_lineup_probability(strategy_model, enemy_frame)
+                enemy_strength = composition_strength(meta_features, map_name, enemy_agents)
+                matchup = pd.DataFrame(
+                    [
+                        {
+                            "Side": "Your team",
+                            "Agents": ", ".join(title_agent(agent) for agent in selected_agents),
+                            "Modeled Probability": probability,
+                            "Composition Score": strength["score"],
+                            "Team Kills": sum(current_kills.values()),
+                        },
+                        {
+                            "Side": "Opponent",
+                            "Agents": ", ".join(title_agent(agent) for agent in enemy_agents),
+                            "Modeled Probability": enemy_probability,
+                            "Composition Score": enemy_strength["score"],
+                            "Team Kills": sum(enemy_kills.values()),
+                        },
+                    ]
+                )
+                matchup = format_probability_table(matchup, ["Modeled Probability", "Composition Score"])
+                st.dataframe(matchup, hide_index=True, use_container_width=True)
+                st.metric("Pressure edge", pct(probability - enemy_probability))
 
         with compare_tab:
             st.subheader("Scenario Comparison")
@@ -394,7 +513,7 @@ with strategy_tab:
                     feature_columns=strategy_metadata["feature_columns"],
                 )
                 alternate_probability = predict_lineup_probability(strategy_model, alternate_frame)
-                alternate_strength = composition_strength(strategy_features, map_name, compare_agents)
+                alternate_strength = composition_strength(meta_features, map_name, compare_agents)
                 comparison_rows = pd.DataFrame(
                     [
                         {
@@ -475,6 +594,17 @@ with benchmark_tab:
 
     chart_data = board.set_index("model")[[metric]]
     st.bar_chart(chart_data)
+    if model_family == "Strategy Lab" and not strategy_calibration.empty:
+        st.subheader("Probability Calibration")
+        calibration_display = format_probability_table(
+            strategy_calibration,
+            ["Mean Predicted Probability", "Observed Win Rate"],
+        )
+        st.dataframe(calibration_display, hide_index=True, use_container_width=True)
+        calibration_chart = strategy_calibration.set_index("Probability Bin")[
+            ["Mean Predicted Probability", "Observed Win Rate"]
+        ]
+        st.line_chart(calibration_chart)
 
 with explorer_tab:
     st.subheader("VCT Explorer")

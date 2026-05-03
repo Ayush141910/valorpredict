@@ -9,6 +9,7 @@ ValorPredict is a Streamlit and scikit-learn analytics project for Valorant line
 The app is deployment-ready for Streamlit Community Cloud, Render, or Docker. A public demo URL should be added here after the app is connected to a hosting account:
 
 - Live app: pending public deployment
+- Current Streamlit URL: [ayush141910-valorpredict-app-m2xgzx.streamlit.app](https://ayush141910-valorpredict-app-m2xgzx.streamlit.app)
 - One-click Streamlit setup: [deploy from this GitHub repo](https://share.streamlit.io/deploy?repository=https://github.com/Ayush141910/valorpredict&branch=main&mainModule=app.py)
 - Deployment guide: [docs/deployment.md](docs/deployment.md)
 

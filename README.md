@@ -4,6 +4,14 @@ ValorPredict is a Streamlit and scikit-learn analytics project for Valorant line
 
 ![ValorPredict Strategy Lab](docs/assets/strategy_lab_preview.png)
 
+## Live Demo
+
+The app is deployment-ready for Streamlit Community Cloud, Render, or Docker. A public demo URL should be added here after the app is connected to a hosting account:
+
+- Live app: pending public deployment
+- One-click Streamlit setup: [deploy from this GitHub repo](https://share.streamlit.io/deploy?repository=https://github.com/Ayush141910/valorpredict&branch=main&mainModule=app.py)
+- Deployment guide: [docs/deployment.md](docs/deployment.md)
+
 ## Project Status
 
 The original prototype used a tiny duplicated CSV and a single random forest. This version rebuilds the project around a real VCT dataset, a strategy simulator, leak-aware pre-match modeling, model benchmarking, and an interactive analytics dashboard.
@@ -60,6 +68,22 @@ scripts/generate_project_assets.py
 src/valorpredict/strategy_modeling.py
 src/valorpredict/vct_modeling.py
 tests/test_pipeline.py
+```
+
+## Architecture
+
+```mermaid
+flowchart LR
+    raw["Kaggle / VLR.gg VCT 2021-2026 data"] --> curate["scripts/prepare_vct_dataset.py"]
+    curate --> tables["Curated match, map, player, and agent tables"]
+    tables --> prematch["Pre-match feature builder"]
+    tables --> strategy["Lineup strategy feature builder"]
+    prematch --> team_model["Team map-winner model"]
+    strategy --> strategy_model["Strategy Lab model"]
+    team_model --> artifacts["Model artifacts"]
+    strategy_model --> artifacts
+    artifacts --> app["Streamlit dashboard"]
+    app --> user["Map, agent comp, kill targets, model evidence"]
 ```
 
 ## Run Locally
@@ -168,7 +192,3 @@ The holdout result is intentionally reported as modest. Professional Valorant ou
 - [Strategy Model Card](reports/strategy_model_card.md)
 - [Pre-Match Model Card](reports/pre_match_model_card.md)
 - [Strategy Calibration Report](reports/strategy_calibration_report.md)
-
-## Resume Wording
-
-> Built an end-to-end Valorant esports strategy platform using VCT 2021-2026 match history, agent-composition modeling, role-aware kill target simulation, model explainability, sequential feature engineering, time-based validation, and an interactive Streamlit dashboard for lineup planning and match analytics.

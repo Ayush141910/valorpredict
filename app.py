@@ -687,11 +687,15 @@ with data_tab:
             {"File": "maps.csv", "Rows": len(maps), "Purpose": "Map outcomes and side scores"},
             {"File": "player_map_stats.csv.gz", "Rows": len(players), "Purpose": "Player-map performance"},
             {"File": "team_agent_compositions.csv.gz", "Rows": len(agents), "Purpose": "Agent composition aggregates"},
-            {"File": "data/processed/vct_map_features.csv", "Rows": metadata["rows"]["features"], "Purpose": "Model features"},
             {
                 "File": "data/processed/vct_lineup_strategy_features.csv",
                 "Rows": strategy_metadata["rows"]["features"],
                 "Purpose": "Strategy Lab lineup features",
+            },
+            {
+                "File": "artifacts/valorpredict_model.joblib",
+                "Rows": metadata["rows"]["features"],
+                "Purpose": "Pre-match model artifact and metadata",
             },
         ]
     )

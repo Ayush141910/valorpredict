@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 .DS_Store
 .streamlit/secrets.toml
+data/processed/vct_map_features.csv
+reports/metrics.json

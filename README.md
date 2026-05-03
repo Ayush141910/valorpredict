@@ -12,9 +12,9 @@ Try the public Streamlit app:
 - One-click Streamlit setup: [deploy from this GitHub repo](https://share.streamlit.io/deploy?repository=https://github.com/Ayush141910/valorpredict&branch=main&mainModule=app.py)
 - Deployment guide: [docs/deployment.md](docs/deployment.md)
 
-## Project Status
+## Overview
 
-The original prototype used a tiny duplicated CSV and a single random forest. This version rebuilds the project around a real VCT dataset, a strategy simulator, leak-aware pre-match modeling, model benchmarking, and an interactive analytics dashboard.
+ValorPredict is built around a curated VCT dataset, a strategy simulator, leak-aware pre-match modeling, model benchmarking, and an interactive analytics dashboard.
 
 Current engineering foundation:
 
@@ -47,7 +47,6 @@ Dockerfile
 Procfile
 .streamlit/config.toml
 data/external/vct_2021_2026/
-data/processed/vct_map_features.csv
 data/processed/vct_lineup_strategy_features.csv
 artifacts/valorpredict_model.joblib
 artifacts/strategy_model.joblib
@@ -59,7 +58,6 @@ reports/strategy_model_card.md
 reports/pre_match_model_card.md
 reports/strategy_calibration.csv
 reports/strategy_calibration_report.md
-reports/metrics.json
 docs/architecture.md
 docs/deployment.md
 docs/assets/
@@ -122,6 +120,8 @@ python scripts/prepare_vct_dataset.py
 python -m compileall app.py train_model.py train_strategy_model.py scripts src tests
 python -m unittest discover -s tests
 ```
+
+Generated files such as `data/processed/vct_map_features.csv` and `reports/metrics.json` are intentionally not committed. They are recreated by `python train_model.py` when needed.
 
 ## Modeling
 

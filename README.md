@@ -11,6 +11,11 @@ Current engineering foundation:
 - curated VCT 2021-2026 dataset sourced from Kaggle/VLR.gg
 - Strategy Lab that lets a user choose a map, five agents, current kills, and a target win probability
 - model-based per-agent kill target recommendations for the selected composition
+- composition strength score with exact-sample and low-confidence warnings
+- role-aware lineup analysis across Duelist, Initiator, Controller, and Sentinel agents
+- kill sensitivity simulator showing which player's extra kills move win probability most
+- map meta and selected-pair synergy tables for agent planning
+- side-by-side scenario comparison for alternate compositions
 - sequential pre-match feature engineering with team form, map form, head-to-head form, round differential, and Elo-style strength
 - benchmark suite across baseline, logistic regression, random forest, extra trees, gradient boosting, histogram gradient boosting, AdaBoost, and KNN
 - honest time-based evaluation: train on 2021-2024, validate on 2025, test on 2026
@@ -32,7 +37,10 @@ reports/model_report.md
 reports/model_comparison.csv
 reports/strategy_model_report.md
 reports/strategy_model_comparison.csv
+reports/strategy_model_card.md
+reports/pre_match_model_card.md
 reports/metrics.json
+docs/architecture.md
 scripts/prepare_vct_dataset.py
 src/valorpredict/strategy_modeling.py
 src/valorpredict/vct_modeling.py
@@ -86,6 +94,7 @@ The primary project experience is a lineup simulator:
 - enter current or expected kills for each agent
 - set a target win probability
 - receive model-based minimum kill targets per agent
+- inspect comp strength, role balance, sample-size confidence, map meta, pair synergy, and probability sensitivity
 
 This model intentionally uses in-game kill lines, so it is not a pre-match betting model. It answers: given this composition and these performance targets, how often did similar professional VCT team-map examples convert into wins?
 
@@ -117,6 +126,23 @@ Current 2026 holdout performance:
 
 The holdout result is intentionally reported as modest. Professional Valorant outcomes are noisy, rosters shift, and this model avoids cheating with post-match stats.
 
+## Product Features
+
+- **Strategy Lab:** choose map, agents, kill lines, and target probability
+- **Role-Aware Targets:** show agent role next to current and recommended kill lines
+- **Composition Strength:** score the selected comp using exact-composition history and blended agent-map evidence
+- **Sensitivity Analysis:** show how +1, +3, and +5 kills per agent affect probability
+- **Map Meta:** show high-performing agents on the selected map
+- **Pair Synergy:** show how selected agent pairs performed together historically
+- **Scenario Comparison:** compare the current comp against an alternate five-agent setup
+- **Model Transparency:** model cards, architecture notes, and leakage/limitation warnings
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [Strategy Model Card](reports/strategy_model_card.md)
+- [Pre-Match Model Card](reports/pre_match_model_card.md)
+
 ## Resume Wording
 
-> Built an end-to-end Valorant esports strategy platform using VCT 2021-2026 match history, agent-composition modeling, per-agent kill target simulation, sequential feature engineering, model benchmarking, and an interactive Streamlit dashboard for lineup planning and match analytics.
+> Built an end-to-end Valorant esports strategy platform using VCT 2021-2026 match history, agent-composition modeling, role-aware kill target simulation, model explainability, sequential feature engineering, time-based validation, and an interactive Streamlit dashboard for lineup planning and match analytics.

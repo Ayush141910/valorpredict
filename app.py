@@ -11,11 +11,17 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from valorpredict.strategy_modeling import (  # noqa: E402
+    agent_map_meta,
+    agent_role,
     build_lineup_frame,
+    composition_strength,
     normalize_agent,
+    pair_synergy,
     predict_lineup_probability,
     reference_kill,
     recommend_kill_targets,
+    role_breakdown,
+    sensitivity_analysis,
 )
 from valorpredict.vct_modeling import build_prediction_frame  # noqa: E402
 
@@ -49,6 +55,7 @@ def load_tables() -> dict[str, pd.DataFrame]:
         "agents": pd.read_csv(DATA_DIR / "team_agent_compositions.csv.gz"),
         "comparison": pd.read_csv(MODEL_COMPARISON_PATH),
         "strategy_comparison": pd.read_csv(STRATEGY_COMPARISON_PATH),
+        "strategy_features": pd.read_csv(ROOT / "data" / "processed" / "vct_lineup_strategy_features.csv"),
     }
 
 
@@ -110,7 +117,30 @@ def title_agent(agent: str) -> str:
     return labels.get(normalized, normalized.replace("_", " ").title())
 
 
+def format_probability_table(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    formatted = frame.copy()
+    for column in columns:
+        if column in formatted:
+            formatted[column] = (formatted[column].astype(float) * 100).round(1)
+    return formatted
+
+
 st.set_page_config(page_title="ValorPredict", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    .block-container {padding-top: 2rem;}
+    [data-testid="stMetric"] {
+        border: 1px solid rgba(49, 51, 63, 0.14);
+        border-radius: 8px;
+        padding: 0.75rem 0.9rem;
+        background: rgba(255, 255, 255, 0.55);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 try:
     artifact = load_artifact()
@@ -131,6 +161,7 @@ players = tables["players"]
 agents = tables["agents"]
 comparison = tables["comparison"]
 strategy_comparison = tables["strategy_comparison"]
+strategy_features = tables["strategy_features"]
 team_options_ranked = popular_teams(maps)
 
 st.title("ValorPredict")
@@ -155,6 +186,7 @@ strategy_tab, predict_tab, benchmark_tab, explorer_tab, player_tab, data_tab = s
 
 with strategy_tab:
     st.subheader("Lineup Strategy Lab")
+    st.caption("Plan a five-agent composition, set expected kill lines, and inspect how the modeled win probability moves.")
     setup_col, result_col = st.columns([1.1, 0.9])
     strategy_maps = strategy_metadata["maps"]
     strategy_agents = strategy_metadata["agents"]
@@ -191,6 +223,19 @@ with strategy_tab:
             selected_agents.append(agent)
             current_kills[normalize_agent(agent)] = int(kills)
 
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Player": [f"Player {index + 1}" for index in range(5)],
+                    "Agent": [title_agent(agent) for agent in selected_agents],
+                    "Role": [agent_role(agent) for agent in selected_agents],
+                    "Kills": [current_kills[normalize_agent(agent)] for agent in selected_agents],
+                }
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
+
     duplicate_agents = len(set(map(normalize_agent, selected_agents))) != 5
     with result_col:
         if duplicate_agents:
@@ -214,10 +259,28 @@ with strategy_tab:
                 target_probability=target_probability,
                 rounds=rounds,
             )
+            strength = composition_strength(strategy_features, map_name, selected_agents)
+            sensitivity = sensitivity_analysis(
+                model=strategy_model,
+                map_name=map_name,
+                current_kills=current_kills,
+                selected_agents=selected_agents,
+                agents=strategy_agents,
+                feature_columns=strategy_metadata["feature_columns"],
+                rounds=rounds,
+            )
 
-            st.metric("Current modeled win probability", pct(probability))
+            top_line = st.columns(3)
+            top_line[0].metric("Current win probability", pct(probability))
+            top_line[1].metric("Composition score", pct(strength["score"]))
+            top_line[2].metric("Team kill target", f"{sum(targets.values())}")
             st.progress(min(max(probability, 0), 1))
-            st.metric("Recommended target probability", pct(target_score))
+            st.caption(
+                f"Composition confidence: {strength['confidence']} | Exact comp samples: {strength['exact_samples']} | "
+                f"Recommended target probability: {pct(target_score)}"
+            )
+            if strength["warning"]:
+                st.warning(strength["warning"])
 
             target_rows = []
             for agent in selected_agents:
@@ -227,15 +290,133 @@ with strategy_tab:
                 target_rows.append(
                     {
                         "Agent": title_agent(agent),
+                        "Role": agent_role(agent),
                         "Current Kills": current,
                         "Target Kills": target,
                         "Gap": max(0, target - current),
                     }
                 )
             st.dataframe(pd.DataFrame(target_rows), hide_index=True, use_container_width=True)
-            st.caption(
-                "This simulator is built from professional VCT outcomes, so it estimates how similar historical lineups converted kill lines into map wins."
+
+    if not duplicate_agents:
+        overview_tab, sensitivity_tab, meta_tab, compare_tab = st.tabs(
+            ["Recommendation", "Sensitivity", "Map Meta", "Compare Comps"]
+        )
+        with overview_tab:
+            left_panel, right_panel = st.columns(2)
+            with left_panel:
+                st.subheader("Role Balance")
+                st.dataframe(role_breakdown(selected_agents), hide_index=True, use_container_width=True)
+            with right_panel:
+                st.subheader("Composition Evidence")
+                evidence = pd.DataFrame(
+                    [
+                        {"Signal": "Map baseline win rate", "Value": pct(strength["map_baseline"])},
+                        {
+                            "Signal": "Exact composition win rate",
+                            "Value": "n/a" if strength["exact_win_rate"] is None else pct(strength["exact_win_rate"]),
+                        },
+                        {"Signal": "Exact samples", "Value": f"{strength['exact_samples']:,}"},
+                        {
+                            "Signal": "Agent-map blended win rate",
+                            "Value": "n/a" if strength["agent_win_rate"] is None else pct(strength["agent_win_rate"]),
+                        },
+                        {"Signal": "Agent-map samples", "Value": f"{strength['agent_samples']:,}"},
+                    ]
+                )
+                st.dataframe(evidence, hide_index=True, use_container_width=True)
+            st.info(
+                "Use the kill targets as planning thresholds. A duelist may carry more frag pressure, while controllers, sentinels, and initiators still influence the probability through historical role-composition patterns."
             )
+
+        with sensitivity_tab:
+            st.subheader("Kill Sensitivity")
+            st.caption("How much the model moves if each selected agent adds 1, 3, or 5 kills from the current line.")
+            sensitivity_display = sensitivity.copy()
+            sensitivity_display["Agent"] = sensitivity_display["Agent"].map(title_agent)
+            sensitivity_display = format_probability_table(
+                sensitivity_display,
+                ["Win Probability", "Probability Lift"],
+            )
+            st.dataframe(sensitivity_display, hide_index=True, use_container_width=True)
+            pivot = sensitivity.pivot(index="Agent", columns="Added Kills", values="Probability Lift").fillna(0)
+            pivot.index = [title_agent(agent) for agent in pivot.index]
+            st.bar_chart(pivot)
+
+        with meta_tab:
+            st.subheader(f"{map_name} Meta")
+            meta = agent_map_meta(strategy_features, map_name, strategy_agents).head(18)
+            meta["Agent"] = meta["Agent"].map(title_agent)
+            meta = format_probability_table(meta, ["Win Rate", "Pick Rate"])
+            meta["Avg Kills"] = meta["Avg Kills"].round(1)
+            st.dataframe(meta, hide_index=True, use_container_width=True)
+
+            synergy = pair_synergy(strategy_features, map_name, selected_agents, min_samples=5)
+            if synergy.empty:
+                st.info("No reliable pair synergy sample for this selected composition on this map.")
+            else:
+                synergy["Pair"] = synergy["Pair"].map(
+                    lambda pair: " + ".join(title_agent(agent) for agent in pair.split(" + "))
+                )
+                synergy = format_probability_table(synergy, ["Win Rate"])
+                st.subheader("Selected Pair Synergy")
+                st.dataframe(synergy, hide_index=True, use_container_width=True)
+
+        with compare_tab:
+            st.subheader("Scenario Comparison")
+            st.caption("Compare your current composition against a second five-agent idea at the same kill target baseline.")
+            compare_defaults = ["raze", "fade", "omen", "cypher", "breach"]
+            compare_agents = []
+            cols = st.columns(5)
+            for slot, col in enumerate(cols):
+                with col:
+                    compare_agents.append(
+                        st.selectbox(
+                            f"Alt {slot + 1}",
+                            strategy_agents,
+                            index=option_index(strategy_agents, compare_defaults[slot], slot),
+                            format_func=title_agent,
+                            key=f"compare_agent_{slot}",
+                        )
+                    )
+            if len(set(map(normalize_agent, compare_agents))) != 5:
+                st.warning("Choose five different alternate agents.")
+            else:
+                alternate_kills = {
+                    normalize_agent(agent): reference_kill(agent, map_name, kill_reference, "P60 Kills")
+                    for agent in compare_agents
+                }
+                alternate_frame = build_lineup_frame(
+                    map_name=map_name,
+                    agent_kills=alternate_kills,
+                    agents=strategy_agents,
+                    rounds=rounds,
+                    feature_columns=strategy_metadata["feature_columns"],
+                )
+                alternate_probability = predict_lineup_probability(strategy_model, alternate_frame)
+                alternate_strength = composition_strength(strategy_features, map_name, compare_agents)
+                comparison_rows = pd.DataFrame(
+                    [
+                        {
+                            "Scenario": "Current",
+                            "Agents": ", ".join(title_agent(agent) for agent in selected_agents),
+                            "Win Probability": probability,
+                            "Composition Score": strength["score"],
+                            "Team Kills": sum(current_kills.values()),
+                            "Confidence": strength["confidence"],
+                        },
+                        {
+                            "Scenario": "Alternate",
+                            "Agents": ", ".join(title_agent(agent) for agent in compare_agents),
+                            "Win Probability": alternate_probability,
+                            "Composition Score": alternate_strength["score"],
+                            "Team Kills": sum(alternate_kills.values()),
+                            "Confidence": alternate_strength["confidence"],
+                        },
+                    ]
+                )
+                comparison_rows = format_probability_table(comparison_rows, ["Win Probability", "Composition Score"])
+                st.dataframe(comparison_rows, hide_index=True, use_container_width=True)
 
 with predict_tab:
     left, right = st.columns([1, 1])

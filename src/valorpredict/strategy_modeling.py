@@ -51,9 +51,44 @@ BASE_NUMERIC_FEATURES = [
 CATEGORICAL_FEATURES = ["Map"]
 TARGET_COLUMN = "team_win"
 
+AGENT_ROLES = {
+    "astra": "Controller",
+    "breach": "Initiator",
+    "brimstone": "Controller",
+    "chamber": "Sentinel",
+    "clove": "Controller",
+    "cypher": "Sentinel",
+    "deadlock": "Sentinel",
+    "fade": "Initiator",
+    "gekko": "Initiator",
+    "harbor": "Controller",
+    "iso": "Duelist",
+    "jett": "Duelist",
+    "kayo": "Initiator",
+    "killjoy": "Sentinel",
+    "neon": "Duelist",
+    "omen": "Controller",
+    "phoenix": "Duelist",
+    "raze": "Duelist",
+    "reyna": "Duelist",
+    "sage": "Sentinel",
+    "skye": "Initiator",
+    "sova": "Initiator",
+    "tejo": "Initiator",
+    "veto": "Sentinel",
+    "viper": "Controller",
+    "vyse": "Sentinel",
+    "waylay": "Duelist",
+    "yoru": "Duelist",
+}
+
 
 def normalize_agent(value: object) -> str:
     return str(value).strip().lower().replace("/", "").replace(" ", "_")
+
+
+def agent_role(agent: str) -> str:
+    return AGENT_ROLES.get(normalize_agent(agent), "Unknown")
 
 
 def agent_feature_name(agent: str, suffix: str) -> str:
@@ -195,6 +230,179 @@ def predict_lineup_probability(model, frame: pd.DataFrame) -> float:
         return float(model.predict_proba(frame)[0][1])
     decision = float(model.decision_function(frame)[0])
     return 1 / (1 + math.exp(-decision))
+
+
+def selected_agent_set(selected_agents: list[str]) -> set[str]:
+    return {normalize_agent(agent) for agent in selected_agents}
+
+
+def role_breakdown(selected_agents: list[str]) -> pd.DataFrame:
+    rows = [{"Role": agent_role(agent), "Agents": 1} for agent in selected_agents]
+    if not rows:
+        return pd.DataFrame(columns=["Role", "Agents"])
+    return pd.DataFrame(rows).groupby("Role", as_index=False).sum().sort_values(["Agents", "Role"], ascending=[False, True])
+
+
+def _picked_columns_for(selected_agents: list[str]) -> list[str]:
+    return [agent_feature_name(agent, "picked") for agent in selected_agents]
+
+
+def _lineups_with_agents(dataset: pd.DataFrame, selected_agents: list[str]) -> pd.Series:
+    columns = [column for column in _picked_columns_for(selected_agents) if column in dataset.columns]
+    if len(columns) != len(selected_agents):
+        return pd.Series(False, index=dataset.index)
+    return dataset[columns].eq(1).all(axis=1)
+
+
+def composition_strength(dataset: pd.DataFrame, map_name: str, selected_agents: list[str]) -> dict:
+    map_rows = dataset[dataset["Map"] == map_name].copy()
+    selected = sorted(selected_agent_set(selected_agents))
+    if map_rows.empty:
+        return {
+            "map_baseline": 0.5,
+            "exact_samples": 0,
+            "exact_win_rate": None,
+            "agent_samples": 0,
+            "agent_win_rate": None,
+            "score": 0.5,
+            "confidence": "No sample",
+            "warning": "No historical examples for this map in the curated dataset.",
+        }
+
+    map_baseline = float(map_rows[TARGET_COLUMN].mean())
+    exact_mask = _lineups_with_agents(map_rows, selected)
+    exact = map_rows[exact_mask]
+    exact_samples = int(len(exact))
+    exact_win_rate = float(exact[TARGET_COLUMN].mean()) if exact_samples else None
+
+    agent_rates = []
+    agent_samples = 0
+    for agent in selected:
+        picked_col = agent_feature_name(agent, "picked")
+        if picked_col not in map_rows:
+            continue
+        agent_rows = map_rows[map_rows[picked_col] == 1]
+        if len(agent_rows):
+            agent_samples += int(len(agent_rows))
+            agent_rates.append(float(agent_rows[TARGET_COLUMN].mean()))
+
+    agent_win_rate = float(np.mean(agent_rates)) if agent_rates else None
+    if exact_samples >= 20 and exact_win_rate is not None:
+        score = exact_win_rate
+        confidence = "High"
+        warning = ""
+    elif exact_samples >= 5 and exact_win_rate is not None:
+        score = 0.65 * exact_win_rate + 0.35 * (agent_win_rate or map_baseline)
+        confidence = "Medium"
+        warning = "Exact composition sample is useful but still limited."
+    else:
+        score = 0.75 * (agent_win_rate or map_baseline) + 0.25 * map_baseline
+        confidence = "Low"
+        warning = "Exact composition is rare; score leans on individual agent-map history."
+
+    return {
+        "map_baseline": map_baseline,
+        "exact_samples": exact_samples,
+        "exact_win_rate": exact_win_rate,
+        "agent_samples": agent_samples,
+        "agent_win_rate": agent_win_rate,
+        "score": float(score),
+        "confidence": confidence,
+        "warning": warning,
+    }
+
+
+def sensitivity_analysis(
+    *,
+    model,
+    map_name: str,
+    current_kills: dict[str, int],
+    selected_agents: list[str],
+    agents: list[str],
+    feature_columns: list[str],
+    rounds: float,
+    increments: tuple[int, ...] = (1, 3, 5),
+) -> pd.DataFrame:
+    base_frame = build_lineup_frame(
+        map_name=map_name,
+        agent_kills=current_kills,
+        agents=agents,
+        rounds=rounds,
+        feature_columns=feature_columns,
+    )
+    base_probability = predict_lineup_probability(model, base_frame)
+    rows = []
+    for agent in selected_agents:
+        normalized = normalize_agent(agent)
+        for increment in increments:
+            trial = current_kills.copy()
+            trial[normalized] = int(trial.get(normalized, 0) + increment)
+            frame = build_lineup_frame(
+                map_name=map_name,
+                agent_kills=trial,
+                agents=agents,
+                rounds=rounds,
+                feature_columns=feature_columns,
+            )
+            probability = predict_lineup_probability(model, frame)
+            rows.append(
+                {
+                    "Agent": normalized,
+                    "Added Kills": increment,
+                    "Win Probability": probability,
+                    "Probability Lift": probability - base_probability,
+                }
+            )
+    return pd.DataFrame(rows).sort_values(["Added Kills", "Probability Lift"], ascending=[True, False])
+
+
+def agent_map_meta(dataset: pd.DataFrame, map_name: str, agents: list[str], min_samples: int = 20) -> pd.DataFrame:
+    map_rows = dataset[dataset["Map"] == map_name]
+    records = []
+    for agent in agents:
+        picked_col = agent_feature_name(agent, "picked")
+        kills_col = agent_feature_name(agent, "kills")
+        if picked_col not in map_rows:
+            continue
+        rows = map_rows[map_rows[picked_col] == 1]
+        if len(rows) < min_samples:
+            continue
+        records.append(
+            {
+                "Agent": agent,
+                "Role": agent_role(agent),
+                "Samples": int(len(rows)),
+                "Win Rate": float(rows[TARGET_COLUMN].mean()),
+                "Avg Kills": float(rows[kills_col].mean()),
+                "Pick Rate": float(len(rows) / len(map_rows)) if len(map_rows) else 0.0,
+            }
+        )
+    return pd.DataFrame(records).sort_values(["Win Rate", "Samples"], ascending=False)
+
+
+def pair_synergy(dataset: pd.DataFrame, map_name: str, agents: list[str], min_samples: int = 15) -> pd.DataFrame:
+    map_rows = dataset[dataset["Map"] == map_name]
+    records = []
+    normalized_agents = sorted(selected_agent_set(agents))
+    for left_index, left_agent in enumerate(normalized_agents):
+        for right_agent in normalized_agents[left_index + 1 :]:
+            left_col = agent_feature_name(left_agent, "picked")
+            right_col = agent_feature_name(right_agent, "picked")
+            if left_col not in map_rows or right_col not in map_rows:
+                continue
+            rows = map_rows[(map_rows[left_col] == 1) & (map_rows[right_col] == 1)]
+            if len(rows) < min_samples:
+                continue
+            records.append(
+                {
+                    "Pair": f"{left_agent} + {right_agent}",
+                    "Samples": int(len(rows)),
+                    "Win Rate": float(rows[TARGET_COLUMN].mean()),
+                }
+            )
+    if not records:
+        return pd.DataFrame(columns=["Pair", "Samples", "Win Rate"])
+    return pd.DataFrame(records).sort_values(["Win Rate", "Samples"], ascending=False)
 
 
 def reference_kill(agent: str, map_name: str, reference: pd.DataFrame, percentile: str = "P60 Kills") -> int:

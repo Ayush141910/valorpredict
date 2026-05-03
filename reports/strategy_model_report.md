@@ -26,3 +26,13 @@ Estimate a team's map win probability from map, five selected agents, and expect
 ## Interpretation
 
 The model is designed for player-facing planning: choose a map, choose a five-agent composition, adjust kill lines, and see how the modeled win probability moves. It should be presented as an esports analytics simulator, not a deterministic win condition.
+
+## Dashboard Additions
+
+- Composition strength score with exact sample counts
+- Role balance table for selected agents
+- Per-agent kill target gaps
+- Probability sensitivity for +1, +3, and +5 kills
+- Map meta table for agent pick rate, win rate, and average kills
+- Selected-pair synergy table
+- Side-by-side alternate composition comparison

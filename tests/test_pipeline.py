@@ -8,7 +8,16 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from valorpredict.strategy_modeling import build_lineup_frame, predict_lineup_probability, recommend_kill_targets
+from valorpredict.strategy_modeling import (
+    agent_map_meta,
+    composition_strength,
+    pair_synergy,
+    role_breakdown,
+    build_lineup_frame,
+    predict_lineup_probability,
+    recommend_kill_targets,
+    sensitivity_analysis,
+)
 from valorpredict.vct_modeling import FEATURE_COLUMNS, build_feature_dataset, build_prediction_frame, load_vct_maps
 
 
@@ -82,6 +91,34 @@ class ValorPredictPipelineTest(unittest.TestCase):
         self.assertLessEqual(probability, 1)
         self.assertEqual(set(targets), set(selected_agents))
         self.assertGreaterEqual(target_probability, probability)
+
+    def test_strategy_analytics_helpers_return_dashboard_signals(self):
+        artifact = joblib.load(ROOT / "artifacts" / "strategy_model.joblib")
+        dataset = pd.read_csv(ROOT / "data" / "processed" / "vct_lineup_strategy_features.csv")
+        selected_agents = ["jett", "sova", "omen", "killjoy", "kayo"]
+        current_kills = {agent: 14 for agent in selected_agents}
+
+        strength = composition_strength(dataset, "Ascent", selected_agents)
+        roles = role_breakdown(selected_agents)
+        sensitivity = sensitivity_analysis(
+            model=artifact["model"],
+            map_name="Ascent",
+            current_kills=current_kills,
+            selected_agents=selected_agents,
+            agents=artifact["metadata"]["agents"],
+            feature_columns=artifact["metadata"]["feature_columns"],
+            rounds=24,
+        )
+        meta = agent_map_meta(dataset, "Ascent", artifact["metadata"]["agents"])
+        synergy = pair_synergy(dataset, "Ascent", selected_agents, min_samples=1)
+
+        self.assertIn("score", strength)
+        self.assertGreaterEqual(strength["score"], 0)
+        self.assertLessEqual(strength["score"], 1)
+        self.assertIn("Duelist", roles["Role"].tolist())
+        self.assertEqual(len(sensitivity), 15)
+        self.assertFalse(meta.empty)
+        self.assertIn("Win Rate", synergy.columns)
 
 
 if __name__ == "__main__":
